@@ -1,0 +1,46 @@
+diff --git a/lib/src/phy/ch_estimation/chest_ul.c b/lib/src/phy/ch_estimation/chest_ul.c
+index 58697d321..e2323b5f7 100644
+--- a/lib/src/phy/ch_estimation/chest_ul.c
++++ b/lib/src/phy/ch_estimation/chest_ul.c
+@@ -26,6 +26,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <strings.h>
++#include <arpa/inet.h>
+ 
+ #include "srsran/config.h"
+ #include "srsran/phy/ch_estimation/cedron_freq_estimator.h"
+@@ -403,6 +404,33 @@ static void chest_ul_estimate(srsran_chest_ul_t* q,
+             ant0_captured = false;
+         }
+ 
++        // --- DF Bridge Export (UDP Port 5555) ---
++        static int udp_sock = -1;
++        static struct sockaddr_in servaddr;
++        if (udp_sock == -1) {
++            udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
++            servaddr.sin_family = AF_INET;
++            servaddr.sin_port = htons(5555); // Bridge port
++            servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
++        }
++
++        // Every 10 subframes, send the delta to the bridge
++        if (res->antenna_idx == 1) {
++            char packet[128];
++            // Send both Phase Delta AND raw PHYS Magnitude (avg_m)
++            // It MUST be in this format for the Python app to read it: "delta,mag"
++            float min_m = 1000, max_m = 0, sum_m = 0;
++            for (uint32_t i = 0; i < nrefs_sym; i++) {
++                float m = cabsf(res->ce[ref_idx + i]);
++                if (m < min_m) min_m = m;
++                if (m > max_m) max_m = m;
++                sum_m += m;
++            }
++            float avg_m = sum_m / nrefs_sym;
++            sprintf(packet, "%.4f,%.2f", spatial_delta, avg_m); 
++            sendto(udp_sock, packet, strlen(packet), 0, (const struct sockaddr *)&servaddr, sizeof(servaddr));
++        }
++
+         // 3. Console Dashboard (Throttled: Shows both Ant 0 and Ant 1 every 10 subframes)
+         if (csi_global_idx % 20 == 19 || csi_global_idx % 20 == 0) {
+             float min_m = 1000, max_m = 0, sum_m = 0;

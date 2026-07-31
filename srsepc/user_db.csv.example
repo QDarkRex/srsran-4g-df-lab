@@ -1,0 +1,21 @@
+#
+# .csv to store UE's information in HSS
+# Kept in the following format: "Name,Auth,IMSI,Key,OP_Type,OP/OPc,AMF,SQN,QCI,IP_alloc"
+#
+# Name:     Human readable name to help distinguish UE's. Ignored by the HSS
+# Auth:     Authentication algorithm used by the UE. Valid algorithms are XOR
+#           (xor) and MILENAGE (mil)
+# IMSI:     UE's IMSI value
+# Key:      UE's key, where other keys are derived from. Stored in hexadecimal
+# OP_Type:  Operator's code type, either OP or OPc
+# OP/OPc:   Operator Code/Cyphered Operator Code, stored in hexadecimal
+# AMF:      Authentication management field, stored in hexadecimal
+# SQN:      UE's Sequence number for freshness of the authentication
+# QCI:      QoS Class Identifier for the UE's default bearer.
+# IP_alloc: IP allocation stratagy for the SPGW.
+#           With 'dynamic' the SPGW will automatically allocate IPs
+#           With a valid IPv4 (e.g. '172.16.0.2') the UE will have a statically assigned IP.
+#
+# Note: Lines starting by '#' are ignored and will be overwritten
+sysmo_940,mil,999700000117940,5297CD5BB4C56DC49937213094534A24,opc,E24668B233E9BB13B29E53D76681CAE8,8000,000000000000,9,dynamic
+sysmo_950,mil,999700000117950,A742C8EF1611680D6CAD2C379575C68A,opc,57C6AD5E0CB72062EE1727CFD5432ABD,8000,000000000000,9,dynamic

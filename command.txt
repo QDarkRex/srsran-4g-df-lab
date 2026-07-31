@@ -1,0 +1,9 @@
+echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+
+cd srsepc
+sudo ../build/srsepc/src/srsepc epc.conf
+
+cd srsenb
+sudo ../build/srsenb/src/srsenb enb.conf
+
+ping 172.16.0.2 -i 0.2

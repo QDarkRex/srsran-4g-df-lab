@@ -1,0 +1,39 @@
+#                                                                                           
+# .csv to store UE's information in HSS                                                     
+# Kept in the following format: "Name,Auth,IMSI,Key,OP_Type,OP/OPc,AMF,SQN,QCI,IP_alloc"  
+#                                                                                           
+# Name:     Human readable name to help distinguish UE's. Ignored by the HSS                
+# Auth:     Authentication algorithm used by the UE. Valid algorithms are XOR               
+#           (xor) and MILENAGE (mil)                                                        
+# IMSI:     UE's IMSI value                                                                 
+# Key:      UE's key, where other keys are derived from. Stored in hexadecimal              
+# OP_Type:  Operator's code type, either OP or OPc                                          
+# OP/OPc:   Operator Code/Cyphered Operator Code, stored in hexadecimal                     
+# AMF:      Authentication management field, stored in hexadecimal                          
+# SQN:      UE's Sequence number for freshness of the authentication                        
+# QCI:      QoS Class Identifier for the UE's default bearer.                               
+# IP_alloc: IP allocation stratagy for the SPGW.                                            
+#           With 'dynamic' the SPGW will automatically allocate IPs                         
+#           With a valid IPv4 (e.g. '172.16.0.2') the UE will have a statically assigned IP.
+#                                                                                           
+# Note: Lines starting by '#' are ignored and will be overwritten                           
+auto_accepted_1,mil,510018220479152,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000294,9,dynamic
+auto_accepted,mil,510019469516270,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000a75,9,dynamic
+auto_accepted,mil,510019469516272,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000c03,9,dynamic
+auto_accepted,mil,510019469516273,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000efa,9,dynamic
+auto_accepted,mil,510019469517043,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,00000000090a,9,dynamic
+auto_accepted,mil,510019469517050,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000cc9,9,dynamic
+auto_accepted,mil,510019469517056,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,00000000094c,9,dynamic
+auto_accepted,mil,510019469517060,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000a33,9,dynamic
+auto_accepted,mil,510019469517061,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000a33,9,dynamic
+auto_accepted,mil,510092081349417,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,0000000000c6,9,dynamic
+auto_accepted_2,mil,510102172992232,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000002b45,9,dynamic
+auto_accepted,mil,510106482900834,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,00000000016b,9,dynamic
+auto_accepted_3,mil,510115724366367,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000653,9,dynamic
+auto_accepted,mil,510116317237527,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000021,9,dynamic
+auto_accepted,mil,510897258890057,00112233445566778899aabbccddeeff,opc,c1e0a606e72a0e4793b3fb5f1712a32c,8000,000000000021,9,dynamic
+sysmo_940,mil,999700000117940,5297cd5bb4c56dc49937213094534a24,opc,e24668b233e9bb13b29e53d76681cae8,8000,000000000000,9,dynamic
+sysmo_950,mil,999700000117950,a742c8ef1611680d6cad2c379575c68a,opc,57c6ad5e0cb72062ee1727cfd5432abd,8000,000000003814,9,dynamic
+sysmo_966,mil,999700000117966,f1cba4bf9b3fb239f3ad3d1a67326795,opc,7e4efda8db0e1d17c5ab76095b66b127,8000,0000000010a9,9,dynamic
+sysmo_968,mil,999700000117968,a45009592bc67b6fd128b8478056d14e,opc,3fe231931c59c5637d492e7cb8244295,8000,0000000000c6,9,dynamic
+sysmo_969,mil,999700000117969,8403f1e3e996ae54e68a948c97d70e29,opc,3eb924ffa623d9beb3303972ca3ee179,8000,000000000f3a,9,dynamic
