@@ -521,6 +521,29 @@ static void chest_ul_estimate(srsran_chest_ul_t* q,
     static uint32_t csi_global_idx = 0;
     static uint32_t csi_throttle   = 0;
 
+    // --- I/O staging: data is copied here under the lock, then consumed
+    //     OUTSIDE the lock so that file/network I/O never blocks the
+    //     real-time PHY worker threads.  The mutex only protects the
+    //     shared active_ues[] array and csi_* counters. ---
+    bool    io_needed             = false;
+    char    io_imsi[32]           = {0};
+    uint16_t io_rnti              = 0;
+    bool    io_already_resolved   = false;
+    float   io_spatial_delta      = 0.0f;
+    float   io_joined_mag         = 0.0f;
+    float   io_joined_csi_var     = 0.0f;
+    float   io_ant0_min           = 0.0f;
+    float   io_ant0_max           = 0.0f;
+    float   io_ant0_avg           = 0.0f;
+    float   io_ant0_csi           = 0.0f;
+    float   io_ant1_min           = 0.0f;
+    float   io_ant1_max           = 0.0f;
+    float   io_ant1_avg           = 0.0f;
+    float   io_ant1_csi           = 0.0f;
+    active_ue_t io_sorted[MAX_ACTIVE_UES];
+    int     io_active_count       = 0;
+    bool    io_dashboard_needed   = false;
+
     pthread_mutex_lock(&df_state_mutex);
 
     if (csi_fp == NULL) {
@@ -635,71 +658,41 @@ static void chest_ul_estimate(srsran_chest_ul_t* q,
 
             active_ues[ue_idx].ant0_captured = false;
 
-            // 3. Console Dashboard (Throttled: Shows joined result once every 10 subframes = 20 slots)
+            // 3. Copy results to staging locals, then unlock for I/O
             float joined_mag = (active_ues[ue_idx].last_avg_m_ant0 + avg_m) / 2.0f;
             float joined_csi_var = (active_ues[ue_idx].last_csi_var_ant0 + csi_var) / 2.0f;
 
-            char imsi_str[32];
-            bool already_resolved = (active_ues[ue_idx].imsi[0] != '\0') &&
-                                     (strncmp(active_ues[ue_idx].imsi, "RNTI-", 5) != 0);
-            if (already_resolved) {
-                // Already known for this UE: skip the disk lookup entirely.
-                // resolve_imsi_from_rnti() opens/scans up to 3 files from /tmp on every
-                // call, inside the real-time PHY UL path (~1ms TTI budget) — doing that
-                // every subframe for every active UE was the real bottleneck.
-                snprintf(imsi_str, sizeof(imsi_str), "%s", active_ues[ue_idx].imsi);
-            } else {
-                bool resolved = resolve_imsi_from_rnti(rnti, imsi_str, sizeof(imsi_str));
-                if (!resolved) {
-                    snprintf(imsi_str, sizeof(imsi_str), "RNTI-0x%04x", rnti);
-                }
+            io_needed = true;
+            io_rnti = rnti;
+            io_already_resolved = (active_ues[ue_idx].imsi[0] != '\0') &&
+                                  (strncmp(active_ues[ue_idx].imsi, "RNTI-", 5) != 0);
+            snprintf(io_imsi, sizeof(io_imsi), "%s",
+                     io_already_resolved ? active_ues[ue_idx].imsi : "");
+            io_spatial_delta = spatial_delta;
+            io_joined_mag    = joined_mag;
+            io_joined_csi_var = joined_csi_var;
+            io_ant0_min = active_ues[ue_idx].last_min_m_ant0;
+            io_ant0_max = active_ues[ue_idx].last_max_m_ant0;
+            io_ant0_avg = active_ues[ue_idx].last_avg_m_ant0;
+            io_ant0_csi = active_ues[ue_idx].last_csi_var_ant0;
+            io_ant1_min = min_m;
+            io_ant1_max = max_m;
+            io_ant1_avg = avg_m;
+            io_ant1_csi = csi_var;
+
+            // Update cache entry (state mutation — keep inside lock)
+            if (!io_already_resolved) {
+                // Not yet resolved: cache a placeholder so the hot path
+                // skips file I/O next time.  Will be overwritten with the
+                // real IMSI after resolve_imsi_from_rnti() runs below.
+                snprintf(active_ues[ue_idx].imsi, sizeof(active_ues[ue_idx].imsi),
+                         "RNTI-0x%04x", rnti);
             }
-
-            // Write raw data to /tmp/multipath_<IMSI>.csv
-            char log_filename[64];
-            snprintf(log_filename, sizeof(log_filename), "/tmp/multipath_%s.csv", imsi_str);
-            FILE* mp_log_fp = fopen(log_filename, "a");
-            if (mp_log_fp != NULL) {
-                fseek(mp_log_fp, 0, SEEK_END);
-                long size = ftell(mp_log_fp);
-                if (size == 0) {
-                    fprintf(mp_log_fp, "IMSI,Ant0_Min,Ant0_Max,Ant0_Avg,Ant0_CsiVar,Ant1_Min,Ant1_Max,Ant1_Avg,Ant1_CsiVar,JoinedCsiVar\n");
-                }
-                fprintf(mp_log_fp, "%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
-                        imsi_str,
-                        active_ues[ue_idx].last_min_m_ant0, active_ues[ue_idx].last_max_m_ant0, active_ues[ue_idx].last_avg_m_ant0, active_ues[ue_idx].last_csi_var_ant0,
-                        min_m, max_m, avg_m, csi_var,
-                        joined_csi_var);
-                fclose(mp_log_fp);
-            }
-
-            if (true) {
-                // --- DF Bridge Export (UDP Port 5555) ---
-                static int udp_sock = -1;
-                static struct sockaddr_in servaddr;
-                if (udp_sock == -1) {
-                    udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
-                    servaddr.sin_family = AF_INET;
-                    servaddr.sin_port = htons(5555); // Bridge port
-                    servaddr.sin_addr.s_addr = inet_addr("127.0.0.1"); // was "0.0.0.0" — not a valid sendto() destination
-                }
-
-                char packet[128];
-                // IMSI, Phase Delta, joined Magnitude, and joined CSI variance
-                // (multipath/quality indicator - same value the console dashboard
-                // uses for its LOW/MID/HIGH label). Consumers can use this to
-                // distrust a sample instead of plotting a noisy reading as-is.
-                sprintf(packet, "%s,%.4f,%.2f,%.4f", imsi_str, spatial_delta, joined_mag, joined_csi_var);
-                sendto(udp_sock, packet, strlen(packet), 0, (const struct sockaddr *)&servaddr, sizeof(servaddr));
-
-                // Update cache entry
-                snprintf(active_ues[ue_idx].imsi, sizeof(active_ues[ue_idx].imsi), "%s", imsi_str);
-                active_ues[ue_idx].spatial_delta = spatial_delta;
-                active_ues[ue_idx].magnitude = joined_mag;
-                active_ues[ue_idx].multipath_indicator = joined_csi_var;
-                active_ues[ue_idx].last_updated_frame = csi_global_idx;
-                active_ues[ue_idx].active = true;
-            }
+            active_ues[ue_idx].spatial_delta = spatial_delta;
+            active_ues[ue_idx].magnitude = joined_mag;
+            active_ues[ue_idx].multipath_indicator = joined_csi_var;
+            active_ues[ue_idx].last_updated_frame = csi_global_idx;
+            active_ues[ue_idx].active = true;
 
             // Clear old entries (more than 60000 frame increments (~30 seconds) of inactivity)
             for (int i = 0; i < MAX_ACTIVE_UES; i++) {
@@ -708,96 +701,173 @@ static void chest_ul_estimate(srsran_chest_ul_t* q,
                 }
             }
 
+            // Dashboard snapshot (qsort + printf moved outside lock below)
             if (csi_global_idx % 20 == 0) {
-                int active_count = 0;
+                io_active_count = 0;
                 for (int i = 0; i < MAX_ACTIVE_UES; i++) {
                     if (active_ues[i].active) {
-                        active_count++;
+                        io_active_count++;
                     }
                 }
-
-                if (active_count > 0) {
-                    active_ue_t sorted_ues[MAX_ACTIVE_UES];
-                    memcpy(sorted_ues, active_ues, sizeof(active_ues));
-                    qsort(sorted_ues, MAX_ACTIVE_UES, sizeof(active_ue_t), compare_active_ue);
-
-                    printf("\n\033[1;37m┌─────────────────────────┬────────────────────────┬─────────────┬─────────────┐\033[0m\n");
-                    printf("\033[1;37m│   TARGET IMSI (RNTI)    │       DIRECTION        │  MAGNITUDE  │  MULTIPATH  │\033[0m\n");
-                    printf("\033[1;37m├─────────────────────────┼────────────────────────┼─────────────┼─────────────┤\033[0m\n");
-                    char seen_imsis[MAX_ACTIVE_UES][1024];
-                    int seen_count = 0;
-                    for (int i = 0; i < MAX_ACTIVE_UES; i++) {
-                        if (sorted_ues[i].active) {
-                            bool already_seen = false;
-                            for (int j = 0; j < seen_count; j++) {
-                                if (strcmp(seen_imsis[j], sorted_ues[i].imsi) == 0) {
-                                    already_seen = true;
-                                    break;
-                                }
-                            }
-                            if (already_seen) {
-                                continue;
-                            }
-                            snprintf(seen_imsis[seen_count], sizeof(seen_imsis[seen_count]), "%.31s", sorted_ues[i].imsi);
-                            seen_count++;
-
-                            const char* dir_label = "CENTER";
-                            const char* dir_col   = "\033[1;37m"; // White
-                            if (sorted_ues[i].spatial_delta > 0.20f) { dir_label = "LEFT <<"; dir_col = "\033[1;35m"; }
-                            else if (sorted_ues[i].spatial_delta < -0.20f) { dir_label = "RIGHT >>"; dir_col = "\033[1;36m"; }
-
-                            char dir_visible[32];
-                            snprintf(dir_visible, sizeof(dir_visible), "%s (%+.2f)", dir_label, sorted_ues[i].spatial_delta);
-                            int dir_len = (int)strlen(dir_visible);
-                            int dir_pad_left = (24 - dir_len) / 2;
-                            int dir_pad_right = 24 - dir_len - dir_pad_left;
-
-                            char ue_str[1024];
-                            if (strncmp(sorted_ues[i].imsi, "RNTI-", 5) != 0) {
-                                snprintf(ue_str, sizeof(ue_str), "%.31s (0x%04x)", sorted_ues[i].imsi, sorted_ues[i].rnti);
-                            } else {
-                                snprintf(ue_str, sizeof(ue_str), "%.31s", sorted_ues[i].imsi);
-                            }
-                            int ue_len = (int)strlen(ue_str);
-                            int ue_pad_left = (25 - ue_len) / 2;
-                            int ue_pad_right = 25 - ue_len - ue_pad_left;
-
-                            char mag_str[32];
-                            snprintf(mag_str, sizeof(mag_str), "%.2f", sorted_ues[i].magnitude);
-                            int mag_len = (int)strlen(mag_str);
-                            int mag_pad_left = (13 - mag_len) / 2;
-                            int mag_pad_right = 13 - mag_len - mag_pad_left;
-
-                            const char* mp_label = "LOW";
-                            const char* mp_col   = "\033[1;32m"; // Green
-                            if (sorted_ues[i].multipath_indicator > 0.40f) {
-                                mp_label = "HIGH";
-                                mp_col   = "\033[1;31m"; // Red
-                            } else if (sorted_ues[i].multipath_indicator > 0.15f) {
-                                mp_label = "MID";
-                                mp_col   = "\033[1;33m"; // Yellow
-                            }
-
-                            char mp_visible[32];
-                            snprintf(mp_visible, sizeof(mp_visible), "%s (%.2f)", mp_label, sorted_ues[i].multipath_indicator);
-                            int mp_len = (int)strlen(mp_visible);
-                            int mp_pad_left = (13 - mp_len) / 2;
-                            int mp_pad_right = 13 - mp_len - mp_pad_left;
-
-                            printf("\033[1;37m│\033[0m%*s%s%*s\033[1;37m│\033[0m%*s%s%s%*s\033[1;37m│\033[0m%*s%s%*s\033[1;37m│\033[0m%*s%s%s%*s\033[1;37m│\033[0m\n",
-                                   ue_pad_left, "", ue_str, ue_pad_right, "",
-                                   dir_pad_left, "", dir_col, dir_visible, dir_pad_right, "",
-                                   mag_pad_left, "", mag_str, mag_pad_right, "",
-                                   mp_pad_left, "", mp_col, mp_visible, mp_pad_right, "");
-                        }
-                    }
-                    printf("\033[1;37m└─────────────────────────┴────────────────────────┴─────────────┴─────────────┘\033[0m\n");
+                if (io_active_count > 0) {
+                    io_dashboard_needed = true;
+                    memcpy(io_sorted, active_ues, sizeof(active_ues));
                 }
             }
         }
     }
 
     pthread_mutex_unlock(&df_state_mutex);
+
+    // =====================================================================
+    // I/O OUTSIDE THE MUTEX — file and network I/O never hold the lock
+    // that guards real-time PHY state shared across worker threads.
+    // =====================================================================
+
+    if (io_needed) {
+        // IMSI resolution (slow file I/O — was previously blocking the
+        // real-time PHY path inside the mutex).
+        char final_imsi[32];
+        if (io_already_resolved) {
+            snprintf(final_imsi, sizeof(final_imsi), "%s", io_imsi);
+        } else {
+            snprintf(final_imsi, sizeof(final_imsi), "RNTI-0x%04x", io_rnti);
+            resolve_imsi_from_rnti(io_rnti, final_imsi, sizeof(final_imsi));
+            // Write back the resolved IMSI into the cache for the hot path.
+            // This races benignly with other threads: they either see the old
+            // placeholder or the new value — both are correct strings.
+            pthread_mutex_lock(&df_state_mutex);
+            for (int i = 0; i < MAX_ACTIVE_UES; i++) {
+                if (active_ues[i].rnti == io_rnti && active_ues[i].active) {
+                    snprintf(active_ues[i].imsi, sizeof(active_ues[i].imsi), "%s", final_imsi);
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&df_state_mutex);
+        }
+
+        // Write multipath CSV
+        char log_filename[64];
+        snprintf(log_filename, sizeof(log_filename), "/tmp/multipath_%s.csv", final_imsi);
+        FILE* mp_log_fp = fopen(log_filename, "a");
+        if (mp_log_fp != NULL) {
+            fseek(mp_log_fp, 0, SEEK_END);
+            long size = ftell(mp_log_fp);
+            if (size == 0) {
+                fprintf(mp_log_fp, "IMSI,Ant0_Min,Ant0_Max,Ant0_Avg,Ant0_CsiVar,Ant1_Min,Ant1_Max,Ant1_Avg,Ant1_CsiVar,JoinedCsiVar\n");
+            }
+            fprintf(mp_log_fp, "%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                    final_imsi,
+                    io_ant0_min, io_ant0_max, io_ant0_avg, io_ant0_csi,
+                    io_ant1_min, io_ant1_max, io_ant1_avg, io_ant1_csi,
+                    io_joined_csi_var);
+            fclose(mp_log_fp);
+        }
+
+        // DF Bridge Export (UDP Port 5555)
+        static int udp_sock = -1;
+        static struct sockaddr_in servaddr;
+        if (udp_sock == -1) {
+            udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
+            if (udp_sock == -1) {
+                // Socket creation failed — skip UDP export this time.
+                // Will retry on the next packet since udp_sock stays -1.
+            } else {
+                memset(&servaddr, 0, sizeof(servaddr));
+                servaddr.sin_family = AF_INET;
+                servaddr.sin_port = htons(5555);
+                servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+            }
+        }
+        if (udp_sock != -1) {
+            char packet[128];
+            // IMSI, Phase Delta, joined Magnitude, and joined CSI variance
+            // (multipath/quality indicator - same value the console dashboard
+            // uses for its LOW/MID/HIGH label). Consumers can use this to
+            // distrust a sample instead of plotting a noisy reading as-is.
+            snprintf(packet, sizeof(packet), "%s,%.4f,%.2f,%.4f",
+                     final_imsi, io_spatial_delta, io_joined_mag, io_joined_csi_var);
+            sendto(udp_sock, packet, strlen(packet), 0,
+                   (const struct sockaddr *)&servaddr, sizeof(servaddr));
+        }
+    }
+
+    // Console dashboard (pure output — reads snapshot taken under lock)
+    if (io_dashboard_needed) {
+        qsort(io_sorted, MAX_ACTIVE_UES, sizeof(active_ue_t), compare_active_ue);
+
+        printf("\n\033[1;37m┌─────────────────────────┬────────────────────────┬─────────────┬─────────────┐\033[0m\n");
+        printf("\033[1;37m│   TARGET IMSI (RNTI)    │       DIRECTION        │  MAGNITUDE  │  MULTIPATH  │\033[0m\n");
+        printf("\033[1;37m├─────────────────────────┼────────────────────────┼─────────────┼─────────────┤\033[0m\n");
+        char seen_imsis[MAX_ACTIVE_UES][1024];
+        int seen_count = 0;
+        for (int i = 0; i < MAX_ACTIVE_UES; i++) {
+            if (io_sorted[i].active) {
+                bool already_seen = false;
+                for (int j = 0; j < seen_count; j++) {
+                    if (strcmp(seen_imsis[j], io_sorted[i].imsi) == 0) {
+                        already_seen = true;
+                        break;
+                    }
+                }
+                if (already_seen) {
+                    continue;
+                }
+                snprintf(seen_imsis[seen_count], sizeof(seen_imsis[seen_count]), "%.31s", io_sorted[i].imsi);
+                seen_count++;
+
+                const char* dir_label = "CENTER";
+                const char* dir_col   = "\033[1;37m"; // White
+                if (io_sorted[i].spatial_delta > 0.20f) { dir_label = "LEFT <<"; dir_col = "\033[1;35m"; }
+                else if (io_sorted[i].spatial_delta < -0.20f) { dir_label = "RIGHT >>"; dir_col = "\033[1;36m"; }
+
+                char dir_visible[32];
+                snprintf(dir_visible, sizeof(dir_visible), "%s (%+.2f)", dir_label, io_sorted[i].spatial_delta);
+                int dir_len = (int)strlen(dir_visible);
+                int dir_pad_left = (24 - dir_len) / 2;
+                int dir_pad_right = 24 - dir_len - dir_pad_left;
+
+                char ue_str[1024];
+                if (strncmp(io_sorted[i].imsi, "RNTI-", 5) != 0) {
+                    snprintf(ue_str, sizeof(ue_str), "%.31s (0x%04x)", io_sorted[i].imsi, io_sorted[i].rnti);
+                } else {
+                    snprintf(ue_str, sizeof(ue_str), "%.31s", io_sorted[i].imsi);
+                }
+                int ue_len = (int)strlen(ue_str);
+                int ue_pad_left = (25 - ue_len) / 2;
+                int ue_pad_right = 25 - ue_len - ue_pad_left;
+
+                char mag_str[32];
+                snprintf(mag_str, sizeof(mag_str), "%.2f", io_sorted[i].magnitude);
+                int mag_len = (int)strlen(mag_str);
+                int mag_pad_left = (13 - mag_len) / 2;
+                int mag_pad_right = 13 - mag_len - mag_pad_left;
+
+                const char* mp_label = "LOW";
+                const char* mp_col   = "\033[1;32m"; // Green
+                if (io_sorted[i].multipath_indicator > 0.40f) {
+                    mp_label = "HIGH";
+                    mp_col   = "\033[1;31m"; // Red
+                } else if (io_sorted[i].multipath_indicator > 0.15f) {
+                    mp_label = "MID";
+                    mp_col   = "\033[1;33m"; // Yellow
+                }
+
+                char mp_visible[32];
+                snprintf(mp_visible, sizeof(mp_visible), "%s (%.2f)", mp_label, io_sorted[i].multipath_indicator);
+                int mp_len = (int)strlen(mp_visible);
+                int mp_pad_left = (13 - mp_len) / 2;
+                int mp_pad_right = 13 - mp_len - mp_pad_left;
+
+                printf("\033[1;37m│\033[0m%*s%s%*s\033[1;37m│\033[0m%*s%s%s%*s\033[1;37m│\033[0m%*s%s%*s\033[1;37m│\033[0m%*s%s%s%*s\033[1;37m│\033[0m\n",
+                       ue_pad_left, "", ue_str, ue_pad_right, "",
+                       dir_pad_left, "", dir_col, dir_visible, dir_pad_right, "",
+                       mag_pad_left, "", mag_str, mag_pad_right, "",
+                       mp_pad_left, "", mp_col, mp_visible, mp_pad_right, "");
+            }
+        }
+        printf("\033[1;37m└─────────────────────────┴────────────────────────┴─────────────┴─────────────┘\033[0m\n");
+    }
 }
 
 int srsran_chest_ul_estimate_pusch(srsran_chest_ul_t*     q,

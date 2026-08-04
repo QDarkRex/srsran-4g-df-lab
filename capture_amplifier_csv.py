@@ -182,7 +182,7 @@ def main():
 def _flush_frame(writer, f, frame_idx, deltas, mags, prev_mean_phase, frame_s, rows_written):
     mean_phase, phase_var = circular_stats(deltas)
     mean_mag = statistics.fmean(mags)
-    mag_var = statistics.pvariance(mags) if len(mags) > 1 else 0.0
+    mag_var = statistics.variance(mags) if len(mags) > 1 else 0.0
 
     if prev_mean_phase is None:
         drift_rate_rps = 0.0

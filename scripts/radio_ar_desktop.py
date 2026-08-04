@@ -50,7 +50,7 @@ def telegram_polling_thread():
     global notification_armed
     if not TG_TOKEN:
         return
-    
+
     last_update_id = 0
     # Discard existing updates to avoid retroactively triggering from old messages
     try:
@@ -63,6 +63,7 @@ def telegram_polling_thread():
     except Exception as e:
         print(f"[Telegram Poller] Init error: {e}")
 
+    backoff = 1  # seconds, doubles on consecutive errors, resets on success
     while True:
         try:
             url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates?offset={last_update_id}&timeout=10"
@@ -75,12 +76,15 @@ def telegram_polling_thread():
                         message = update.get("message", {})
                         text = message.get("text", "")
                         chat_id = str(message.get("chat", {}).get("id", ""))
-                        
+
                         if chat_id == TG_CHAT_ID and text.strip().startswith("/target"):
                             notification_armed = True
                             send_telegram_notification("Target notification armed. Awaiting next detection.")
+                backoff = 1  # reset on success
         except Exception as e:
-            time.sleep(2)
+            print(f"[Telegram Poller] Error: {e} — retrying in {backoff}s")
+            time.sleep(min(backoff, 60))  # cap at 1 minute
+            backoff = min(backoff * 2, 60)
 
 # Start background Telegram update poller
 threading.Thread(target=telegram_polling_thread, daemon=True).start()
@@ -94,6 +98,42 @@ UDP_PORT = 5555
 # mismatch — a wrong value here silently biases LAMBDA/D and every AoA reading,
 # with no error. Check the two are equal after any config change.
 EARFCN = 1455  # Default Band 1
+
+
+def _read_earfcn_from_enb_conf(conf_path):
+    """Try to read dl_earfcn from srsRAN's enb.conf.  Returns int or None."""
+    try:
+        with open(conf_path, "r") as f:
+            in_rf = False
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("[rf]"):
+                    in_rf = True
+                elif stripped.startswith("[") and in_rf:
+                    break  # left the [rf] section
+                elif in_rf and "dl_earfcn" in stripped:
+                    # lines like:  dl_earfcn = 1455
+                    val = stripped.split("=", 1)[1].strip()
+                    return int(val)
+    except Exception:
+        pass
+    return None
+
+
+# Auto-validate EARFCN against enb.conf if it can be found
+_enb_conf_paths = [
+    os.path.join(os.path.dirname(__file__), "..", "srsenb", "enb.conf"),
+    os.path.join(os.path.dirname(__file__), "..", "srsenb", "enb.conf.example"),
+]
+for _p in _enb_conf_paths:
+    _conf_earfcn = _read_earfcn_from_enb_conf(_p)
+    if _conf_earfcn is not None:
+        if _conf_earfcn != EARFCN:
+            print(f"\n⚠️  WARNING: EARFCN mismatch!")
+            print(f"   Script EARFCN = {EARFCN}, enb.conf dl_earfcn = {_conf_earfcn}")
+            print(f"   AoA readings will be WRONG.  Updating EARFCN to {_conf_earfcn}.")
+            EARFCN = _conf_earfcn
+        break
 
 # Calculate frequency based on EARFCN
 # For Band 1 (2100 MHz): EARFCN 0-599 maps to 1920-1980 MHz UL

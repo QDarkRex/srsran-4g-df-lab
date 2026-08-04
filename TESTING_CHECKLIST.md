@@ -2,8 +2,11 @@
 
 Status: software side audited and patched (race condition, hot-path I/O, single-subcarrier
 phase, UDP destination bug, calibration, leaked Telegram token, dual-calibration risk,
-camera-jitter-with-amplifier hardening — see git log). This checklist is for the first real
-hardware run on the lab machine.
+camera-jitter-with-amplifier hardening — see git log). Second pass: mutex restructured so
+file/network I/O never holds the PHY worker lock; sprintf→snprintf; socket error checks;
+if(true) dead branch removed; EARFCN auto-validation vs enb.conf; Telegram polling backoff;
+pvariance→variance for small sample frames; __pycache__ cleaned from repo. This checklist
+is for the first real hardware run on the lab machine.
 
 ## 0. Known symptom already addressed in software: camera jitter when amplifier is attached
 
@@ -46,7 +49,7 @@ amplifier is attached and re-run Test 5 below before assuming the amplifier is f
 sudo apt update
 sudo apt install -y cmake build-essential libfftw3-dev libmbedtls-dev libboost-program-options-dev libconfig++-dev libsctp-dev libczmq-dev uhd-host libuhd-dev python3-pip
 sudo uhd_images_downloader
-pip3 install opencv-python numpy pandas matplotlib
+pip3 install -r requirements.txt
 ```
 
 ## 3. Build
@@ -117,9 +120,9 @@ console dashboard.
 python3 scripts/radio_ar_desktop.py --target-imsi <UE_IMSI>
 ```
 
-Before running: confirm `EARFCN` in the script (near the top) matches `dl_earfcn` in
-`enb.conf` exactly. Leave `PHASE_CORRECTION` at `0.0` — the offset is already applied
-upstream from Test 2.
+Before running: the script now auto-validates `EARFCN` against `srsenb/enb.conf` at
+startup and prints a warning (and auto-corrects) if they mismatch. Leave
+`PHASE_CORRECTION` at `0.0` — the offset is already applied upstream from Test 2.
 
 - **Pass:** the target line on video follows the UE's real position as it moves left/right.
 - **Save:** recording/screenshots of the HUD at several known UE positions.

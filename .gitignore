@@ -1,2 +1,5 @@
 build/
 srsue/.ctxt
+__pycache__/
+*.pyc
+*.pyo
