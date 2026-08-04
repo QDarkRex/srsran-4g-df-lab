@@ -195,7 +195,7 @@ def draw_tactical_compass(img, targets):
         magnitude = target['smooth_mag']
         target_rad = math.radians(angle - 90)
         color = (0, 255, 0)
-        if magnitude < 5: color = (0, 150, 255) # Warning Amber
+        if magnitude < 5 or target.get('low_confidence'): color = (0, 150, 255) # Warning Amber
         
         tip_x = int(cx + (r - 10) * math.cos(target_rad))
         tip_y = int(cy + (r - 10) * math.sin(target_rad))
@@ -239,7 +239,16 @@ while True:
         try:
             data, addr = sock.recvfrom(1024)
             msg = data.decode().split(',')
-            if len(msg) >= 3:
+            # Wire format: imsi,delta,mag[,csi_var]. csi_var is the same
+            # multipath/quality indicator the console dashboard on the eNB
+            # side labels LOW/MID/HIGH - older senders may not send it.
+            csi_var = 0.0
+            if len(msg) >= 4:
+                imsi = msg[0]
+                raw_delta_phi = float(msg[1])
+                mag = float(msg[2])
+                csi_var = float(msg[3])
+            elif len(msg) == 3:
                 imsi = msg[0]
                 raw_delta_phi = float(msg[1])
                 mag = float(msg[2])
@@ -249,15 +258,15 @@ while True:
                 mag = float(msg[1])
             else:
                 continue
-            
+
             # Skip processing if IMSI contains "RNTI" (case insensitive)
             if "RNTI" in imsi.upper():
                 continue
-            
+
             # Filter by postfix if specified
             if POSTFIX and not imsi.endswith(POSTFIX):
                 continue
-            
+
             calibrated_phi = raw_delta_phi - PHASE_CORRECTION
             while calibrated_phi > math.pi: calibrated_phi -= 2 * math.pi
             while calibrated_phi < -math.pi: calibrated_phi += 2 * math.pi
@@ -265,9 +274,19 @@ while True:
             ratio = (LAMBDA * calibrated_phi) / (2 * math.pi * D)
             clamped_ratio = max(-1.0, min(1.0, ratio))
             aoa = math.degrees(math.asin(clamped_ratio))
-            
+
             if INVERT_DIRECTION: aoa *= -1
-            
+
+            # A sample is untrustworthy if the phase implies a physically
+            # impossible angle (|ratio| > 1 before clamping - asin() would
+            # have silently snapped the marker to +/-90deg) or if the
+            # multipath/quality indicator is HIGH (same 0.40 threshold used
+            # by the console dashboard). This is the fix for "camera jitters
+            # once the amplifier is attached": a noisy/clipped RX chain was
+            # producing brief bad readings that got plotted at face value,
+            # including hard snaps to the frame edge.
+            low_confidence = (abs(ratio) > 1.0) or (csi_var > 0.40)
+
             # Update target state
             now = time.time()
             if imsi not in active_targets:
@@ -276,7 +295,8 @@ while True:
                     'current_mag': mag,
                     'smooth_x': center_x,
                     'smooth_mag': mag,
-                    'last_seen': now
+                    'last_seen': now,
+                    'low_confidence': low_confidence
                 }
                 if not TARGET_IMSI or imsi == TARGET_IMSI:
                     if notification_armed:
@@ -287,9 +307,14 @@ while True:
                             send_telegram_notification(f"IMSI {imsi} detected")
             else:
                 target = active_targets[imsi]
-                target['current_aoa'] = aoa
+                # Freeze the angle on a low-confidence sample instead of
+                # plotting it - magnitude/last_seen still update so the
+                # target doesn't vanish or look stale.
+                if not low_confidence:
+                    target['current_aoa'] = aoa
                 target['current_mag'] = mag
                 target['last_seen'] = now
+                target['low_confidence'] = low_confidence
                 
         except BlockingIOError:
             break
@@ -377,7 +402,7 @@ while True:
             
         sx = target['smooth_x']
         color = (0, 255, 0)
-        if target['smooth_mag'] < 5: color = (0, 150, 255) # Warning Amber if weak signal
+        if target['smooth_mag'] < 5 or target.get('low_confidence'): color = (0, 150, 255) # Warning Amber if weak signal or unreliable sample
         
         # Vertical target line
         cv2.line(blended, (sx, 0), (sx, h), color, 2)

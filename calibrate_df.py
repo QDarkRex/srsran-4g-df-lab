@@ -101,10 +101,16 @@ def main():
             except socket.timeout:
                 continue
             try:
+                # Wire format is "imsi,delta,mag,csi_var" (csi_var added so
+                # consumers can gate on signal quality instead of trusting
+                # every raw sample). Also accept the older 3-field format.
                 parts = data.decode(errors="ignore").strip().split(",")
-                if len(parts) != 3:
+                if len(parts) == 4:
+                    imsi, delta_str, mag_str, _csi_var_str = parts
+                elif len(parts) == 3:
+                    imsi, delta_str, mag_str = parts
+                else:
                     continue
-                imsi, delta_str, mag_str = parts
                 delta = float(delta_str)
                 mag = float(mag_str)
             except ValueError:

@@ -685,8 +685,11 @@ static void chest_ul_estimate(srsran_chest_ul_t* q,
                 }
 
                 char packet[128];
-                // Send both IMSI, Phase Delta, and joined Magnitude
-                sprintf(packet, "%s,%.4f,%.2f", imsi_str, spatial_delta, joined_mag); 
+                // IMSI, Phase Delta, joined Magnitude, and joined CSI variance
+                // (multipath/quality indicator - same value the console dashboard
+                // uses for its LOW/MID/HIGH label). Consumers can use this to
+                // distrust a sample instead of plotting a noisy reading as-is.
+                sprintf(packet, "%s,%.4f,%.2f,%.4f", imsi_str, spatial_delta, joined_mag, joined_csi_var);
                 sendto(udp_sock, packet, strlen(packet), 0, (const struct sockaddr *)&servaddr, sizeof(servaddr));
 
                 // Update cache entry

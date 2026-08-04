@@ -124,10 +124,15 @@ def main():
                     continue
 
                 try:
+                    # Wire format is "imsi,delta,mag,csi_var"; accept the older
+                    # 3-field format too. csi_var isn't used by this schema.
                     parts = data.decode(errors="ignore").strip().split(",")
-                    if len(parts) != 3:
+                    if len(parts) == 4:
+                        imsi, delta_str, mag_str, _csi_var_str = parts
+                    elif len(parts) == 3:
+                        imsi, delta_str, mag_str = parts
+                    else:
                         continue
-                    imsi, delta_str, mag_str = parts
                     delta = float(delta_str)
                     mag = float(mag_str)
                 except ValueError:

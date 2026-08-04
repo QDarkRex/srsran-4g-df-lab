@@ -545,6 +545,27 @@ def main():
         print("      • Gain: {:.1f} dB".format(10*np.log10(mag_gain)))
         print("      • Phase noise increase: {:.1f} dB".format(phase_noise_db))
     
+    # --- Clipping / RX saturation heuristic ---
+    # For a linear amplifier, multiplying signal amplitude by mag_gain should
+    # also multiply its variance by roughly mag_gain**2 (variance scales with
+    # amplitude^2). If measured magnitude variance grew far less than that
+    # while phase got noisier, that's the signature of RX clipping/
+    # saturation, not of a bad amplifier - a very common cause being a fixed
+    # rx_gain (e.g. enb.conf) that was tuned WITHOUT the amplifier and is now
+    # seeing a much stronger input than it was calibrated for.
+    expected_mag_var_ratio = mag_gain ** 2
+    if mag_gain > 3 and phase_ratio > 2 and mag_ratio < expected_mag_var_ratio * 0.3:
+        print_header("⚠️  POSSIBLE RX CLIPPING/SATURATION", "=")
+        print(f"\n   Magnitude gain is {mag_gain:.1f}x, so variance was expected to grow ~{expected_mag_var_ratio:.0f}x,")
+        print(f"   but only grew {mag_ratio:.1f}x while phase noise increased {phase_ratio:.1f}x.")
+        print("   Flattened magnitude + noisy phase together usually means the receiver is")
+        print("   compressing/clipping, not that the amplifier itself is faulty.")
+        print("\n   📋 ACTION ITEMS:")
+        print("      1. Lower rx_gain in enb.conf while the amplifier is in the chain —")
+        print("         it was very likely tuned without the amplifier and is now")
+        print("         seeing a much stronger input, which can saturate the ADC.")
+        print("      2. Re-run this capture after lowering rx_gain and compare again.")
+
     # Print surge analysis
     print_surge_analysis(surge_stats, normal_stats, surge_metrics, stats_without)
     

@@ -1,8 +1,30 @@
 # DF + Amplifier Testing Checklist
 
 Status: software side audited and patched (race condition, hot-path I/O, single-subcarrier
-phase, UDP destination bug, calibration, leaked Telegram token, dual-calibration risk — see
-git log). This checklist is for the first real hardware run on the lab machine.
+phase, UDP destination bug, calibration, leaked Telegram token, dual-calibration risk,
+camera-jitter-with-amplifier hardening — see git log). This checklist is for the first real
+hardware run on the lab machine.
+
+## 0. Known symptom already addressed in software: camera jitter when amplifier is attached
+
+The programmer reported the camera HUD gets jittery once the amplifier is in the chain. Two
+software-side contributors were found and fixed:
+
+1. `chest_ul.c`'s DF UDP packet now also carries the multipath/quality indicator
+   (`csi_var`, 4th field). `radio_ar_desktop.py` uses it to freeze the plotted angle
+   instead of drawing a noisy/impossible reading (also catches the case where phase noise
+   pushes the AoA math to a physically invalid angle, which used to snap the marker to the
+   frame edge). Low-confidence samples now render amber instead of green.
+2. `analyze_amp.py` gained a clipping/saturation heuristic: if magnitude variance didn't
+   grow the way it should for the observed gain while phase noise did, it now prints an
+   explicit "POSSIBLE RX CLIPPING/SATURATION" warning.
+
+**This is very likely a `rx_gain` problem, not a bug in the amplifier or the DF math**:
+`srsenb/enb.conf`'s `rx_gain = 80` is a fixed value that was almost certainly tuned
+*without* the amplifier attached. With the amplifier now boosting the input, that same
+`rx_gain` can push the B210's ADC into saturation/clipping — which corrupts the channel
+estimate and shows up as exactly this kind of jitter. **Try lowering `rx_gain` while the
+amplifier is attached and re-run Test 5 below before assuming the amplifier is faulty.**
 
 ## 1. What to copy to the Linux lab machine
 
