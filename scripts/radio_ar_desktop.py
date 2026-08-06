@@ -3,10 +3,12 @@ import os
 import socket
 import math
 import time
+import statistics
 import numpy as np
 import argparse
 import json
 import threading
+from collections import deque
 
 # --- 0. ARGUMENT PARSING ---
 import urllib.request
@@ -15,9 +17,26 @@ import urllib.parse
 parser = argparse.ArgumentParser(description="Tactical Radio Tracker")
 parser.add_argument("--postfix", type=str, default="", help="Only show IMSIs ending with this postfix")
 parser.add_argument("--target-imsi", type=str, default="", help="Target IMSI to monitor")
+parser.add_argument("--antenna-spacing-cm", type=float, default=None,
+                    help="Measured center-to-center RX0/RX1 spacing in cm. If omitted, "
+                         "assumes exactly half-wavelength (lambda/2). WRONG value here "
+                         "biases every AoA reading — measure the real spacing.")
+parser.add_argument("--max-aoa-jump-deg", type=float, default=35.0,
+                    help="Reject/freeze a sample if AoA jumps more than this many degrees "
+                         "from the last good sample (kills phase-wrap edge-snapping). "
+                         "A real target cannot cross the field of view in one TTI.")
+parser.add_argument("--endfire-limit-deg", type=float, default=60.0,
+                    help="Flag readings beyond +/- this angle as low-confidence: a 2-element "
+                         "interferometer is unreliable near +/-90deg (endfire).")
+parser.add_argument("--aoa-median-window", type=int, default=5,
+                    help="Number of recent AoA samples to median-filter over (rejects single "
+                         "outlier snaps). Set to 1 to disable.")
 args_parsed = parser.parse_args()
 POSTFIX = args_parsed.postfix
 TARGET_IMSI = args_parsed.target_imsi
+MAX_AOA_JUMP_DEG = args_parsed.max_aoa_jump_deg
+ENDFIRE_LIMIT_DEG = args_parsed.endfire_limit_deg
+AOA_MEDIAN_WINDOW = max(1, args_parsed.aoa_median_window)
 
 # Telegram credentials, read from the environment (never hardcode a live bot
 # token in source — a previous token was committed here and had to be
@@ -156,15 +175,25 @@ FREQ_UL = earfcn_to_frequency(EARFCN)
 C = 299792458
 LAMBDA = C / FREQ_UL
 
-# Antenna spacing (typically half-wavelength)
-# You can adjust this multiplier if needed (0.5 = half wavelength is standard)
-ANTENNA_SPACING_FACTOR = 0.5
-D = (LAMBDA * ANTENNA_SPACING_FACTOR)  # Correct spacing based on frequency
+# Antenna spacing. The AoA math (ratio = LAMBDA*phi / (2*pi*D)) is only correct
+# if D matches the REAL physical center-to-center RX0/RX1 spacing. Half-wavelength
+# is the ideal (spans exactly +/-90deg over the +/-pi phase range with no
+# ambiguity), but if the hardware isn't exactly lambda/2 the readings are biased
+# and phase wrapping becomes more frequent — so allow a measured override.
+LAMBDA_HALF = LAMBDA * 0.5
+if args_parsed.antenna_spacing_cm is not None:
+    D = args_parsed.antenna_spacing_cm / 100.0
+else:
+    D = LAMBDA_HALF
 
 print(f"EARFCN: {EARFCN}")
 print(f"Frequency: {FREQ_UL / 1e6:.2f} MHz")
-print(f"Wavelength: {LAMBDA * 100:.2f} cm")
-print(f"Antenna spacing: {D * 100:.2f} cm")
+print(f"Wavelength: {LAMBDA * 100:.2f} cm  (lambda/2 = {LAMBDA_HALF * 100:.2f} cm)")
+print(f"Antenna spacing (D): {D * 100:.2f} cm"
+      + ("  [measured]" if args_parsed.antenna_spacing_cm is not None else "  [assumed lambda/2]"))
+if D > LAMBDA_HALF * 1.05:
+    print(f"⚠️  WARNING: spacing {D*100:.2f} cm > lambda/2 ({LAMBDA_HALF*100:.2f} cm): "
+          f"expect phase ambiguity / edge-snapping toward the field-of-view edges.")
 
 # --- 2. CALIBRATION & VISUALS ---
 # IMPORTANT: this is a SECOND, independent phase-offset knob on top of
@@ -319,13 +348,14 @@ while True:
 
             # A sample is untrustworthy if the phase implies a physically
             # impossible angle (|ratio| > 1 before clamping - asin() would
-            # have silently snapped the marker to +/-90deg) or if the
+            # have silently snapped the marker to +/-90deg), if the
             # multipath/quality indicator is HIGH (same 0.40 threshold used
-            # by the console dashboard). This is the fix for "camera jitters
-            # once the amplifier is attached": a noisy/clipped RX chain was
-            # producing brief bad readings that got plotted at face value,
-            # including hard snaps to the frame edge.
-            low_confidence = (abs(ratio) > 1.0) or (csi_var > 0.40)
+            # by the console dashboard), or if the angle is out in the endfire
+            # zone where a 2-element interferometer is inherently unreliable
+            # (#4). This is the fix for "camera jitters once the amplifier is
+            # attached": a noisy/clipped RX chain producing brief bad readings
+            # that got plotted at face value, including hard snaps to the edge.
+            low_confidence = (abs(ratio) > 1.0) or (csi_var > 0.40) or (abs(aoa) > ENDFIRE_LIMIT_DEG)
 
             # Update target state
             now = time.time()
@@ -336,7 +366,8 @@ while True:
                     'smooth_x': center_x,
                     'smooth_mag': mag,
                     'last_seen': now,
-                    'low_confidence': low_confidence
+                    'low_confidence': low_confidence,
+                    'aoa_hist': deque([aoa], maxlen=AOA_MEDIAN_WINDOW)
                 }
                 if not TARGET_IMSI or imsi == TARGET_IMSI:
                     if notification_armed:
@@ -347,14 +378,27 @@ while True:
                             send_telegram_notification(f"IMSI {imsi} detected")
             else:
                 target = active_targets[imsi]
-                # Freeze the angle on a low-confidence sample instead of
-                # plotting it - magnitude/last_seen still update so the
-                # target doesn't vanish or look stale.
-                if not low_confidence:
-                    target['current_aoa'] = aoa
+
+                # #1 Temporal continuity guard: a real device cannot cross the
+                # field of view in one ~1ms TTI. If the new angle jumps more
+                # than MAX_AOA_JUMP_DEG from the last accepted angle, it's a
+                # phase-wrap artifact (the +pi/-pi boundary flips the sign and
+                # teleports the marker edge-to-edge). Note the low_confidence
+                # gate above does NOT catch this, because a wrapped phase is
+                # still a "valid" ratio in [-1, 1] — it just points the wrong
+                # way. Freeze the angle on such a jump instead of plotting it.
+                aoa_jump = abs(aoa - target['current_aoa'])
+                wrapped_jump = aoa_jump > MAX_AOA_JUMP_DEG
+
+                if not low_confidence and not wrapped_jump:
+                    # #2 Median filter on the ANGLE (not just the pixel), to
+                    # reject single-sample outliers that slipped through.
+                    target['aoa_hist'].append(aoa)
+                    target['current_aoa'] = statistics.median(target['aoa_hist'])
+
                 target['current_mag'] = mag
                 target['last_seen'] = now
-                target['low_confidence'] = low_confidence
+                target['low_confidence'] = low_confidence or wrapped_jump
                 
         except BlockingIOError:
             break

@@ -117,14 +117,31 @@ console dashboard.
 ### Test 4 — Camera HUD (optional; stop `calibrate_df.py` first — port conflict)
 
 ```bash
-python3 scripts/radio_ar_desktop.py --target-imsi <UE_IMSI>
+# Pass the REAL measured RX0/RX1 center-to-center spacing in cm:
+python3 scripts/radio_ar_desktop.py --target-imsi <UE_IMSI> --antenna-spacing-cm <measured_cm>
 ```
 
 Before running: the script now auto-validates `EARFCN` against `srsenb/enb.conf` at
 startup and prints a warning (and auto-corrects) if they mismatch. Leave
 `PHASE_CORRECTION` at `0.0` — the offset is already applied upstream from Test 2.
 
-- **Pass:** the target line on video follows the UE's real position as it moves left/right.
+**On the reported "marker snaps to far left/right when the device moves" symptom:** that is
+phase wrapping in the 2-element interferometer, not amplifier noise. Two things address it:
+
+- *Physical (most important):* RX0/RX1 center-to-center spacing must be **≤ λ/2** for the
+  band in use. At UL ~1735 MHz (EARFCN 1455) that is **≈ 8.6 cm**. Spacing larger than
+  λ/2 causes genuine phase ambiguity and frequent edge-snapping. TX antennas do NOT affect
+  the angle — only the two RX antennas matter; keep TX separated only to avoid RX desense.
+  Measure the real spacing and pass it via `--antenna-spacing-cm`; the script warns if it
+  exceeds λ/2.
+- *Software (already added):* the HUD now (1) freezes the angle on any inter-frame jump
+  larger than `--max-aoa-jump-deg` (default 35° — a real device can't cross the FOV in one
+  TTI), (2) median-filters the angle over `--aoa-median-window` samples (default 5), and
+  (3) flags readings beyond `--endfire-limit-deg` (default 60°) as low-confidence. Frozen /
+  low-confidence samples render amber instead of green.
+
+- **Pass:** the target line on video follows the UE's real position as it moves left/right,
+  and no longer teleports to the frame edges. Wide-angle/edge readings show amber.
 - **Save:** recording/screenshots of the HUD at several known UE positions.
 
 ### Test 5 — Amplifier (stop other UDP tools first)
