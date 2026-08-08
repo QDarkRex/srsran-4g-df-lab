@@ -116,14 +116,34 @@ console dashboard.
 
 ### Test 4 — Camera HUD (optional; stop `calibrate_df.py` first — port conflict)
 
+**Camera placement** (the software cannot correct for a wrong physical setup):
+- Mount the camera at the **midpoint of the RX0/RX1 baseline** — equidistant from both
+  antennas (e.g. ~4 cm from each if spacing is 8 cm). Keep lateral offset from that
+  midpoint as small as practical; a few cm is fine at multi-meter target ranges, but
+  matters more up close (`error ≈ atan(offset / range)`).
+- Point the camera's optical axis **parallel to the array's broadside direction** — the
+  same direction the console dashboard calls CENTER. The frame center must correspond to
+  AoA = 0°, or every reading will be offset by a constant, wrong amount.
+
+**Measure the camera's real horizontal FOV** before running — don't trust the "90°"
+default, most webcams aren't that wide:
+1. Put a tape measure or ruler flat on the ground, perpendicular to the camera, at a known
+   distance `R` from the lens (e.g. R = 100 cm).
+2. Note the total horizontal width `W` that's visible edge-to-edge in the video frame at
+   that distance.
+3. `HFOV = 2 * atan((W/2) / R)` in degrees (e.g. R=100cm, W=133cm visible → HFOV ≈ 68°).
+
 ```bash
-# Pass the REAL measured RX0/RX1 center-to-center spacing in cm:
-python3 scripts/radio_ar_desktop.py --target-imsi <UE_IMSI> --antenna-spacing-cm <measured_cm>
+# Pass the REAL measured RX0/RX1 spacing AND the real measured camera HFOV:
+python3 scripts/radio_ar_desktop.py --target-imsi <UE_IMSI> \
+    --antenna-spacing-cm <measured_cm> --cam-hfov <measured_deg>
 ```
 
 Before running: the script now auto-validates `EARFCN` against `srsenb/enb.conf` at
 startup and prints a warning (and auto-corrects) if they mismatch. Leave
-`PHASE_CORRECTION` at `0.0` — the offset is already applied upstream from Test 2.
+`PHASE_CORRECTION` at `0.0` — the offset is already applied upstream from Test 2. `w`/`s`
+keys still let you nudge HFOV live once running, for fine visual tuning only — don't use
+them as a substitute for the actual measurement above.
 
 **On the reported "marker snaps to far left/right when the device moves" symptom:** that is
 phase wrapping in the 2-element interferometer, not amplifier noise. Two things address it:

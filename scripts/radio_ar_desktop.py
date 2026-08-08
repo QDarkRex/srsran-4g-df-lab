@@ -31,6 +31,14 @@ parser.add_argument("--endfire-limit-deg", type=float, default=60.0,
 parser.add_argument("--aoa-median-window", type=int, default=5,
                     help="Number of recent AoA samples to median-filter over (rejects single "
                          "outlier snaps). Set to 1 to disable.")
+parser.add_argument("--cam-hfov", type=float, default=90.0,
+                    help="Measured horizontal field of view of the camera lens, in degrees. "
+                         "The HUD maps AoA degrees linearly onto pixel position assuming the "
+                         "frame center is broadside (0deg) and the frame edges are +/-HFOV/2 "
+                         "— a wrong value here makes every marker position wrong even if the "
+                         "AoA itself is correct. Default 90 is a guess, not a measurement; see "
+                         "TESTING_CHECKLIST.md for how to measure your actual lens HFOV. Can "
+                         "still be nudged live with the 'w'/'s' keys once running.")
 args_parsed = parser.parse_args()
 POSTFIX = args_parsed.postfix
 TARGET_IMSI = args_parsed.target_imsi
@@ -208,9 +216,13 @@ if D > LAMBDA_HALF * 1.05:
 # sanity check (point the reference at true broadside, tap a/d until the HUD
 # reads ~0), then throw that number away — don't leave it applied here AND
 # in df_calibration.conf at the same time.
-CAM_HFOV = 90.0
+CAM_HFOV = args_parsed.cam_hfov
 PHASE_CORRECTION = 0.0
 INVERT_DIRECTION = False
+
+print(f"Camera HFOV: {CAM_HFOV:.1f} deg"
+      + ("  [default guess — measure the real lens HFOV, see TESTING_CHECKLIST.md]"
+         if args_parsed.cam_hfov == 90.0 else "  [provided]"))
 
 GAUSSIAN_SIGMA = 100         # Adjusted for 720p
 HEATMAP_ALPHA_PEAK = 0.6
