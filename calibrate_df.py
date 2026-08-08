@@ -47,6 +47,7 @@ the old offset already being subtracted upstream).
 
 import argparse
 import math
+import os
 import socket
 import sys
 import time
@@ -72,6 +73,10 @@ def main():
     ap.add_argument("--imsi", type=str, default=None, help="Only use samples from this IMSI (default: auto-pick busiest)")
     ap.add_argument("--min-samples", type=int, default=100, help="Minimum samples required before trusting the result")
     ap.add_argument("--out", type=str, default="/tmp/df_calibration.conf", help="Where to write the offset (radians)")
+    ap.add_argument("--reset", action="store_true",
+                    help="Ignore any existing offset and write this run's measured value as an "
+                         "absolute offset (use only when srsenb is currently running with NO "
+                         "calibration applied, i.e. offset 0 / no file).")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -185,16 +190,44 @@ def main():
         print("R looks reasonably tight — offset should be usable as-is.")
     print("-" * 70)
 
-    with open(args.out, "w") as f:
-        f.write(f"{mean_angle:.6f}\n")
+    # --- ACCUMULATE, don't replace ---
+    # srsenb (chest_ul.c) already SUBTRACTS the current offset before it
+    # broadcasts spatial_delta. So `mean_angle` here is the RESIDUAL that
+    # remains AFTER the offset that was loaded when srsenb started — NOT the
+    # raw hardware offset. Writing mean_angle directly would just chase its own
+    # tail (calibrate -> restart -> same residual reappears). The correct new
+    # offset is the previous one PLUS this residual, which drives the residual
+    # to ~0 and converges. Assumes srsenb was (re)started AFTER the last write
+    # to this file, so the file's current value == the offset srsenb loaded.
+    prev_offset = 0.0
+    if not args.reset and os.path.exists(args.out):
+        try:
+            with open(args.out, "r") as f:
+                prev_offset = float(f.read().strip())
+        except (ValueError, OSError):
+            prev_offset = 0.0
 
-    print(f"\nWrote offset to {args.out}: {mean_angle:+.6f} rad")
+    new_offset = math.atan2(math.sin(prev_offset + mean_angle),
+                            math.cos(prev_offset + mean_angle))  # wrap to [-pi, pi]
+
+    with open(args.out, "w") as f:
+        f.write(f"{new_offset:.6f}\n")
+
+    print(f"\nPrevious offset (loaded by the running srsenb): {prev_offset:+.6f} rad")
+    print(f"Residual still seen at broadside (this run):     {mean_angle:+.6f} rad")
+    print(f"New accumulated offset written to {args.out}:  {new_offset:+.6f} rad")
+    if abs(mean_angle) < 0.05:
+        print("  (residual already near zero — calibration has converged)")
     print("\nNEXT STEPS:")
     print("  1. Restart srsenb (the offset is only loaded once, at process start).")
     print("  2. Re-check the console dashboard with the reference UE back in the SAME")
     print("     broadside position — it should now read close to CENTER (~0.00).")
+    print("     If it's closer to 0 than before but not there yet, just repeat this")
+    print("     calibrate -> restart cycle once more; it converges.")
     print("  3. Move the reference to a known LEFT/RIGHT position and confirm the")
     print("     dashboard direction matches reality before trusting live readings.")
+    print("\n  To start over from scratch (offset 0), rerun with --reset, or delete")
+    print(f"  {args.out} before calibrating.")
 
 
 if __name__ == "__main__":
