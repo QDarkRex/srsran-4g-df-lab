@@ -81,9 +81,15 @@ that's a lab-specific dependency mismatch — send the build log back.
 
 ### Test 1 — Basic bring-up (no DF/camera tooling yet)
 
+The config files (`epc.conf`, `enb.conf`) live in `srsepc/` and `srsenb/` — the compiled
+binaries live in `build/srsepc/src/` and `build/srsenb/src/`, NOT alongside the source
+`.cc` files. Run them from the repo root, or `cd` into the config's directory and point
+at the binary with a relative path, matching the original `command.txt`:
+
 ```bash
-cd srsepc/src && sudo ./srsepc epc.conf
-cd srsenb/src && sudo ./srsenb enb.conf
+cd srsepc && sudo ../build/srsepc/src/srsepc epc.conf
+# in another terminal:
+cd srsenb && sudo ../build/srsenb/src/srsenb enb.conf
 ```
 
 - **Pass:** UE attaches, console dashboard shows the **real IMSI** (not `RNTI-0x...`
